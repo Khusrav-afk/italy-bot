@@ -30,7 +30,6 @@ SHOW_AGENT = os.getenv("SHOW_AGENT", "0") == "1"   # демо: показыва�
 
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "service_account.json")
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON", "")
 CACHE_TTL = 300
 CALENDAR_ID = os.getenv("CALENDAR_ID")
 CALENDAR_TZ = os.getenv("CALENDAR_TZ", "Europe/Rome")
@@ -41,6 +40,10 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
 sessions: dict[int, dict] = {}
+muted_chats: set = set()          # чаты, где Наталья написала стоп-слово - бот молчит
+STOP_WORD = os.getenv("STOP_WORD", "un attimo").strip().lower()
+USE_WEB_SEARCH = os.getenv("USE_WEB_SEARCH", "1") == "1"
+WEB_SEARCH_TOOL = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 LEAD_RE = re.compile(r"\[LEAD\](.*?)\[/LEAD\]", re.S)
 BOOKING_RE = re.compile(r"\[BOOKING\](.*?)\[/BOOKING\]", re.S)
 JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -142,13 +145,23 @@ BASE_TEMPLATE = """\
 @@FAQ@@
 
 ПРАВИЛА: не присылай каталог жилья в чат; не консультируй по медицине и юр.вопросам; не
-запрашивай карты и паспорта. Стоп-слово "un attimo" - сразу передай живому человеку.
+запрашивай карты и паспорта.
 ОБЯЗАТЕЛЬНО: перед передачей Наталье уточни ИМЯ и КОНТАКТ (WhatsApp/телефон).
+
+НИКОГДА НЕ ГОВОРИ "не знаю", "у меня нет информации", "нет готового списка", "уточните у
+Натальи". Даже если точных данных нет в базе - ВСЁ РАВНО веди диалог и собирай обязательные
+данные: город, отель (если есть), сколько человек, возраст детей (если есть), желаемые даты,
+что именно интересует. Эти данные нужно получить в любом случае и передать Наталье. Отсутствие
+данных в базе - не повод отказать, а повод собрать заявку.
+
+ИНТЕРНЕТ: если клиент спрашивает то, чего нет в базе (погода, какие города где находятся,
+расстояния, общие факты об Италии) - используй веб-поиск и ответь по существу, затем вернись к
+сбору данных и услуге. Цены, ссылки и условия бери ТОЛЬКО из базы, не выдумывай их из интернета.
 
 ПЕРЕДАЧА: когда собрал тему, даты, состав, что нужно, имя и контакт - спокойно сообщи, что
 передаёшь Наталье, и добавь в конце служебный блок (клиент не увидит):
 [LEAD]{"direction":"","name":"","dates":"","duration":"","people":"","city":"","budget":"","services":"","language":"ru","contact":"","urgency":"","status":"warm","summary":""}[/LEAD]
-Выдавай [LEAD] один раз. Стоп-слово -> [LEAD] со status:"hot", urgency:"стоп-слово".
+Выдавай [LEAD] один раз.
 """
 
 SUBAGENTS = {
@@ -209,17 +222,11 @@ _sheets_on = bool(SHEET_ID)
 _calendar_on = bool(CALENDAR_ID)
 
 
-def _load_google_creds(scopes):
-    from google.oauth2.service_account import Credentials
-    if GOOGLE_CREDS_JSON:
-        info = json.loads(GOOGLE_CREDS_JSON)
-        return Credentials.from_service_account_info(info, scopes=scopes)
-    return Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=scopes)
-
-
 def _open_sheet():
     import gspread
-    creds = _load_google_creds(["https://www.googleapis.com/auth/spreadsheets"])
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDS_FILE, scopes=["https://www.googleapis.com/auth/spreadsheets"])
     return gspread.authorize(creds).open_by_key(SHEET_ID)
 
 
@@ -345,6 +352,14 @@ async def on_caltest(message: Message):
 @dp.message(F.text)
 async def on_text(message: Message):
     chat_id = message.chat.id
+    # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит.
+    if chat_id in muted_chats:
+        return
+    if message.text.strip().lower() == STOP_WORD:
+        muted_chats.add(chat_id)
+        logging.info("Стоп-слово в чате %s - бот замолчал", chat_id)
+        return
+
     s = sessions.setdefault(chat_id, {"history": [], "agent": None, "segment": None})
     s["history"].append({"role": "user", "content": message.text})
     if len(s["history"]) > 40:
@@ -366,14 +381,16 @@ async def on_text(message: Message):
 
     system_prompt = build_prompt(agent, segment, settings, faq, kb, sub)
     try:
-        resp = await claude.messages.create(
-            model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
+        kwargs = dict(model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
+        if USE_WEB_SEARCH:
+            kwargs["tools"] = WEB_SEARCH_TOOL
+        resp = await claude.messages.create(**kwargs)
     except Exception:
         logging.exception("Claude API error")
         await message.answer("Секунду, уточню детали и вернусь.")
         return
 
-    reply = "".join(b.text for b in resp.content if b.type == "text").strip()
+    reply = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
     s["history"].append({"role": "assistant", "content": reply})
 
     lead = LEAD_RE.search(reply)
@@ -476,8 +493,10 @@ def _parse_dt(s: str) -> datetime:
 
 
 def _create_event(b):
+    from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
-    creds = _load_google_creds(["https://www.googleapis.com/auth/calendar"])
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDS_FILE, scopes=["https://www.googleapis.com/auth/calendar"])
     svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
     start = _parse_dt(b["datetime"])
     end = start + timedelta(minutes=int(b.get("duration_min") or 120))
