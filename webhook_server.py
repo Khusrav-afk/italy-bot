@@ -44,6 +44,28 @@ IG_APP_SECRET = os.getenv("IG_APP_SECRET", "")
 GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v21.0")
 GRAPH_URL = f"https://graph.instagram.com/{GRAPH_VERSION}"
 
+# Несколько Instagram-аккаунтов: карта "id аккаунта -> токен".
+# Формат в .env: IG_TOKENS=17841400931469869:TOKEN1,17841411843707162:TOKEN2
+# Если IG_TOKENS пуст - используется один IG_ACCESS_TOKEN (для любого аккаунта).
+def _parse_ig_tokens() -> dict:
+    raw = os.getenv("IG_TOKENS", "").strip()
+    tokens = {}
+    if raw:
+        for pair in raw.split(","):
+            if ":" in pair:
+                acc_id, tok = pair.split(":", 1)
+                tokens[acc_id.strip()] = tok.strip()
+    return tokens
+
+IG_TOKENS = _parse_ig_tokens()
+
+
+def _token_for(account_id: str) -> str:
+    """Токен для конкретного аккаунта-получателя; фолбэк на общий IG_ACCESS_TOKEN."""
+    if account_id and account_id in IG_TOKENS:
+        return IG_TOKENS[account_id]
+    return IG_ACCESS_TOKEN
+
 app = FastAPI()
 
 # Память диалогов по Instagram-пользователю (ключ = его IG id).
@@ -82,14 +104,15 @@ async def incoming(request: Request):
         return Response(content="bad signature", status_code=403)
 
     data = json.loads(raw or b"{}")
-    # Структура Instagram: { "object": "instagram", "entry": [ { "messaging": [ {...} ] } ] }
+    # Структура Instagram: { "object": "instagram", "entry": [ { "id": "<account_id>", "messaging": [ {...} ] } ] }
     for entry in data.get("entry", []):
+        account_id = entry.get("id")  # ID бизнес-аккаунта, на который пришло сообщение
         for ev in entry.get("messaging", []):
-            await _handle_event(ev)
+            await _handle_event(ev, account_id)
     return Response(content="EVENT_RECEIVED", media_type="text/plain")
 
 
-async def _handle_event(ev: dict):
+async def _handle_event(ev: dict, account_id: str = ""):
     msg = ev.get("message") or {}
     # Эхо: сообщение, отправленное самим бизнес-аккаунтом (Наталья пишет вручную с телефона).
     if msg.get("is_echo"):
@@ -100,7 +123,6 @@ async def _handle_event(ev: dict):
             muted_chats.add(recipient)
             logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
         elif recipient:
-            # Наталья ответила вручную (не стоп-слово) - на всякий случай не перебиваем в этом чате.
             logging.info("IG: ручной ответ Натальи в чате с %s", recipient)
         return
     sender = (ev.get("sender") or {}).get("id")
@@ -114,7 +136,7 @@ async def _handle_event(ev: dict):
 
     reply = await think(sender, text)
     if reply:
-        await send_ig_message(sender, reply)
+        await send_ig_message(sender, reply, account_id)
 
 
 async def think(user_id: str, text: str) -> str:
@@ -157,14 +179,15 @@ async def think(user_id: str, text: str) -> str:
     return sanitize(reply)
 
 
-async def send_ig_message(recipient_id: str, text: str):
-    """Отправка ответа в Instagram Direct через Graph API."""
-    if not IG_ACCESS_TOKEN:
-        logging.error("IG_ACCESS_TOKEN не задан - не могу отправить ответ")
+async def send_ig_message(recipient_id: str, text: str, account_id: str = ""):
+    """Отправка ответа в Instagram Direct через Graph API (токеном нужного аккаунта)."""
+    token = _token_for(account_id)
+    if not token:
+        logging.error("Нет токена для аккаунта %s - не могу отправить ответ", account_id)
         return
     url = f"{GRAPH_URL}/me/messages"
     payload = {"recipient": {"id": recipient_id}, "message": {"text": text}}
-    params = {"access_token": IG_ACCESS_TOKEN}
+    params = {"access_token": token}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(url, params=params, json=payload)
         if r.status_code >= 400:
