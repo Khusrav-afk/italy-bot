@@ -32,7 +32,8 @@ from fastapi import FastAPI, Request, Response
 # --- переиспользуем мозг из bot.py (Telegram-бот не запускается при импорте) ---
 from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
-    AGENTS, LEAD_RE, BOOKING_RE,
+    AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD,
+    USE_WEB_SEARCH, WEB_SEARCH_TOOL,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -90,12 +91,25 @@ async def incoming(request: Request):
 
 async def _handle_event(ev: dict):
     msg = ev.get("message") or {}
-    # Пропускаем эхо собственных сообщений и нетекстовые события.
+    # Эхо: сообщение, отправленное самим бизнес-аккаунтом (Наталья пишет вручную с телефона).
     if msg.get("is_echo"):
+        # Стоп-слово от Натальи в конкретном чате -> бот замолкает в этом чате навсегда.
+        recipient = (ev.get("recipient") or {}).get("id")
+        text = (msg.get("text") or "").strip().lower()
+        if recipient and text == STOP_WORD:
+            muted_chats.add(recipient)
+            logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
+        elif recipient:
+            # Наталья ответила вручную (не стоп-слово) - на всякий случай не перебиваем в этом чате.
+            logging.info("IG: ручной ответ Натальи в чате с %s", recipient)
         return
     sender = (ev.get("sender") or {}).get("id")
     text = msg.get("text")
     if not sender or not text:
+        return
+    # Если чат заглушён стоп-словом - бот молчит.
+    if sender in muted_chats:
+        logging.info("IG: чат с %s заглушён, пропускаю", sender)
         return
 
     reply = await think(sender, text)
@@ -118,13 +132,15 @@ async def think(user_id: str, text: str) -> str:
 
     system_prompt = build_prompt(agent, segment, settings, faq, kb, sub)
     try:
-        resp = await claude.messages.create(
-            model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
+        kwargs = dict(model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
+        if USE_WEB_SEARCH:
+            kwargs["tools"] = WEB_SEARCH_TOOL
+        resp = await claude.messages.create(**kwargs)
     except Exception:
         logging.exception("Claude API error")
         return "Секунду, уточню детали и вернусь."
 
-    reply = "".join(b.text for b in resp.content if b.type == "text").strip()
+    reply = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
     s["history"].append({"role": "assistant", "content": reply})
 
     # Лиды/брони: вырезаем служебные блоки из текста клиента.
