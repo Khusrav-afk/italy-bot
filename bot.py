@@ -225,11 +225,21 @@ _sheets_on = bool(SHEET_ID)
 _calendar_on = bool(CALENDAR_ID)
 
 
+def _load_google_creds(scopes):
+    """Креды сервисного аккаунта. Приоритет - переменная окружения GOOGLE_CREDS_JSON
+    (весь JSON строкой, как на Render). Если её нет - файл GOOGLE_CREDS_FILE.
+    Секрет в коде не хранится, только в окружении."""
+    from google.oauth2.service_account import Credentials
+    raw = os.getenv("GOOGLE_CREDS_JSON")
+    if raw and raw.strip():
+        info = json.loads(raw)
+        return Credentials.from_service_account_info(info, scopes=scopes)
+    return Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=scopes)
+
+
 def _open_sheet():
     import gspread
-    from google.oauth2.service_account import Credentials
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDS_FILE, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    creds = _load_google_creds(["https://www.googleapis.com/auth/spreadsheets"])
     return gspread.authorize(creds).open_by_key(SHEET_ID)
 
 
@@ -496,10 +506,8 @@ def _parse_dt(s: str) -> datetime:
 
 
 def _create_event(b):
-    from google.oauth2.service_account import Credentials
     from googleapiclient.discovery import build
-    creds = Credentials.from_service_account_file(
-        GOOGLE_CREDS_FILE, scopes=["https://www.googleapis.com/auth/calendar"])
+    creds = _load_google_creds(["https://www.googleapis.com/auth/calendar"])
     svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
     start = _parse_dt(b["datetime"])
     end = start + timedelta(minutes=int(b.get("duration_min") or 120))
