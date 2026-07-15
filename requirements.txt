@@ -7,3 +7,4 @@ google-auth
 python-dotenv
 aiogram
 google-api-python-client
+apscheduler
