@@ -4,6 +4,7 @@ ItalySecretPlaces - мультиагентная система (демо в Tel
 Классификатор определяет тему и сегмент -> передаёт диалог одному из 6 субагентов.
 У каждого субагента СВОЯ вкладка-база знаний в Google Sheets (плюс общие вкладки).
 Лиды -> Sheets + Telegram. Бронь экскурсий -> Google Calendar.
+Follow-up: если клиент замолчал - напоминаем через 7 мин / 3 часа / в 20:00 (followups.py).
 """
 
 import asyncio
@@ -19,6 +20,8 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
+
+from followups import followups   # <-- follow-up цепочка
 
 load_dotenv()
 
@@ -98,6 +101,10 @@ DEFAULTS = {
     "Ссылка на запись": "",
     "Контакт Натальи": "",
     "Примеры стиля": "",
+    # Тексты follow-up (Наталья может переопределить; пустое -> заглушка из followups.py)
+    "Follow-up 1": "",
+    "Follow-up 2": "",
+    "Follow-up 3": "",
 }
 DEFAULT_FAQ: list = []
 DEFAULT_KB: list = []
@@ -267,8 +274,18 @@ def _read_sheet():
     return settings, faq, kb, sub
 
 
+def _apply_followup_texts(settings: dict):
+    """Обновить тексты follow-up из настроек (пустые игнорируются - остаётся заглушка)."""
+    followups.set_messages({
+        "m1": settings.get("Follow-up 1", ""),
+        "m2": settings.get("Follow-up 2", ""),
+        "m3": settings.get("Follow-up 3", ""),
+    })
+
+
 async def get_content():
     if not _sheets_on:
+        _apply_followup_texts(DEFAULTS)
         return DEFAULTS, DEFAULT_FAQ, DEFAULT_KB, DEFAULT_SUBKB
     if _cache["settings"] and time.time() - _cache["ts"] < CACHE_TTL:
         return _cache["settings"], _cache["faq"], _cache["kb"], _cache["sub"]
@@ -276,11 +293,13 @@ async def get_content():
         settings, faq, kb, sub = await asyncio.to_thread(_read_sheet)
         merged = {**DEFAULTS, **{k: v for k, v in settings.items() if v}}
         _cache.update(settings=merged, faq=faq, kb=kb, sub=sub, ts=time.time())
+        _apply_followup_texts(merged)
         return merged, faq, kb, sub
     except Exception:
         logging.exception("Не удалось прочитать таблицу")
         if _cache["settings"]:
             return _cache["settings"], _cache["faq"], _cache["kb"], _cache["sub"]
+        _apply_followup_texts(DEFAULTS)
         return DEFAULTS, DEFAULT_FAQ, DEFAULT_KB, DEFAULT_SUBKB
 
 
@@ -323,10 +342,23 @@ async def classify(history, current):
         return current or "freeform", "premium"
 
 
+# ---------- Follow-up: отправка в Telegram ----------
+async def _fu_send_tg(chat_key: str, text: str):
+    """Как follow-up отправляет сообщение в Telegram. chat_key вида 'tg:123456'."""
+    try:
+        chat_id = int(chat_key.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    if chat_id in muted_chats:      # Наталья заглушила чат - не достаём клиента
+        return
+    await bot.send_message(chat_id, sanitize(text))
+
+
 # ---------- Хэндлеры ----------
 @dp.message(CommandStart())
 async def on_start(message: Message):
     sessions[message.chat.id] = {"history": [], "agent": None, "segment": None}
+    followups.cancel(f"tg:{message.chat.id}")   # новый диалог - снять старые follow-up
     settings, _, _, _ = await get_content()
     await message.answer(sanitize(settings.get("Приветствие", DEFAULTS["Приветствие"])))
 
@@ -370,6 +402,7 @@ async def on_text(message: Message):
         return
     if message.text.strip().lower() == STOP_WORD:
         muted_chats.add(chat_id)
+        followups.cancel(f"tg:{chat_id}")        # Наталья вмешалась - снять follow-up
         logging.info("Стоп-слово в чате %s - бот замолчал", chat_id)
         return
 
@@ -377,6 +410,8 @@ async def on_text(message: Message):
     s["history"].append({"role": "user", "content": message.text})
     if len(s["history"]) > 40:
         del s["history"][:-40]
+
+    followups.on_incoming(f"tg:{chat_id}")        # клиент написал - (пере)планируем follow-up
 
     settings, faq, kb, sub = await get_content()
     await bot.send_chat_action(chat_id, "typing")
@@ -537,6 +572,10 @@ def format_lead(lead):
 
 
 async def main():
+    # Follow-up: настроить и запустить планировщик до старта поллинга.
+    followups.configure(send_func=_fu_send_tg, tz=CALENDAR_TZ)
+    await followups.start()
+    await get_content()   # подтянуть тексты follow-up из таблицы (если есть)
     logging.info("Мультиагент запущен. Субагентов: %d | Sheets: %s | Calendar: %s",
                  len(AGENTS), "вкл" if _sheets_on else "выкл", "вкл" if _calendar_on else "выкл")
     await dp.start_polling(bot)
