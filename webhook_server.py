@@ -6,29 +6,17 @@ classify (классификатор -> субагент), build_prompt (сбо�
 sanitize, разбор [LEAD]/[BOOKING]. Telegram-бот (bot.py) при этом не трогается -
 это отдельный процесс/файл, который слушает входящие от Meta по HTTP.
 
+Follow-up (дожим молчащих клиентов) подключён через followups.py: планируется при
+входящем сообщении клиента, отменяется когда клиент/Наталья отвечают. Для WhatsApp
+учитывается 24-часовое сервисное окно (вне окна follow-up не шлётся).
+
 Каналы разведены по путям:
-    /instagram  - как было (Instagram Direct)
-    /whatsapp   - новый (WhatsApp Cloud API, режим Coexistence)
-У каждого канала свой verify-token и своя настройка вебхука в Meta.
+    /instagram  - Instagram Direct
+    /whatsapp   - WhatsApp Cloud API (Coexistence)
 
 Запуск:
-    pip install fastapi uvicorn httpx
+    pip install fastapi uvicorn httpx apscheduler
     uvicorn webhook_server:app --host 0.0.0.0 --port 8000
-
-Переменные окружения (в .env рядом):
-    # --- Instagram (как было) ---
-    IG_VERIFY_TOKEN   - строка, которую ты придумал (то же в Meta "Подтверждение маркера")
-    IG_ACCESS_TOKEN   - маркер доступа Instagram
-    IG_APP_SECRET     - секрет приложения (для проверки подписи; можно пустым на тесте)
-    GRAPH_VERSION     - версия Graph API (по умолчанию v21.0)
-
-    # --- WhatsApp (новое) ---
-    WHATSAPP_VERIFY_TOKEN    - строка, которую придумаешь (впишешь в Meta -> WhatsApp -> Configuration)
-    WHATSAPP_TOKEN           - ПОСТОЯННЫЙ токен (System User), права whatsapp_business_messaging + _management
-    WHATSAPP_PHONE_NUMBER_ID - Phone Number ID номера Натальи (появится после подключения)
-    WHATSAPP_APP_SECRET      - секрет приложения. ЭТО ТОТ ЖЕ секрет, что и IG_APP_SECRET
-                               (Instagram и WhatsApp сидят на одном Meta-app). Можно продублировать
-                               значение сюда или оставить пустым на тесте.
 """
 
 import hashlib
@@ -44,12 +32,13 @@ from fastapi import FastAPI, Request, Response
 from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
     AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD,
-    USE_WEB_SEARCH, WEB_SEARCH_TOOL,
+    USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ,
 )
+from followups import followups   # <-- follow-up цепочка
 
 logging.basicConfig(level=logging.INFO)
 
-# ========================= Instagram (без изменений) =========================
+# ========================= Instagram =========================
 
 IG_VERIFY_TOKEN = os.getenv("IG_VERIFY_TOKEN", "italy_verify_123")
 IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN", "")
@@ -82,7 +71,7 @@ def _token_for(account_id: str) -> str:
     return IG_ACCESS_TOKEN
 
 
-# ========================= WhatsApp Cloud API (новое) =========================
+# ========================= WhatsApp Cloud API =========================
 
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "italy_wa_verify_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
@@ -96,11 +85,35 @@ WA_GRAPH_URL = f"https://graph.facebook.com/{GRAPH_VERSION}"
 app = FastAPI()
 
 # Память диалогов. Ключи разные (IG id vs wa_id клиента), поэтому храним раздельно.
-# Для начала в памяти процесса; на проде вынести в БД (как и в Telegram-версии).
 ig_sessions: dict[str, dict] = {}
 wa_sessions: dict[str, dict] = {}
 
-# muted_chats (из bot.py) общий: ключи IG и WhatsApp не пересекаются, коллизий нет.
+# Карта "wa_id клиента -> phone_number_id", через который пришло его сообщение.
+# Нужна, чтобы follow-up знал, с какого номера отправлять ответ этому клиенту.
+_wa_pnid_by_user: dict[str, str] = {}
+
+
+# ---------- Follow-up: единая отправка для IG и WA ----------
+async def _fu_send(chat_key: str, text: str):
+    """Как follow-up отправляет сообщение. chat_key: 'ig:<id>' или 'wa:<wa_id>'."""
+    try:
+        channel, uid = chat_key.split(":", 1)
+    except ValueError:
+        return
+    if uid in muted_chats:          # Наталья вмешалась вручную - молчим
+        return
+    if channel == "ig":
+        await send_ig_message(uid, sanitize(text))
+    elif channel == "wa":
+        pnid = _wa_pnid_by_user.get(uid, WHATSAPP_PHONE_NUMBER_ID)
+        await send_wa_message(uid, sanitize(text), pnid)
+
+
+@app.on_event("startup")
+async def _start_followups():
+    followups.configure(send_func=_fu_send, tz=CALENDAR_TZ)
+    await followups.start()
+    await get_content()   # подтянуть тексты follow-up из таблицы (если заданы)
 
 
 # ------------------------------- Instagram: маршруты -------------------------------
@@ -145,13 +158,14 @@ async def _handle_event(ev: dict, account_id: str = ""):
     msg = ev.get("message") or {}
     # Эхо: сообщение, отправленное самим бизнес-аккаунтом (Наталья пишет вручную с телефона).
     if msg.get("is_echo"):
-        # Стоп-слово от Натальи в конкретном чате -> бот замолкает в этом чате навсегда.
         recipient = (ev.get("recipient") or {}).get("id")
         text = (msg.get("text") or "").strip().lower()
         if recipient and text == STOP_WORD:
             muted_chats.add(recipient)
+            followups.cancel(f"ig:{recipient}")          # стоп-слово - снять follow-up
             logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
         elif recipient:
+            followups.cancel(f"ig:{recipient}")          # Наталья ответила сама - не дожимаем
             logging.info("IG: ручной ответ Натальи в чате с %s", recipient)
         return
     sender = (ev.get("sender") or {}).get("id")
@@ -162,6 +176,8 @@ async def _handle_event(ev: dict, account_id: str = ""):
     if sender in muted_chats:
         logging.info("IG: чат с %s заглушён, пропускаю", sender)
         return
+
+    followups.on_incoming(f"ig:{sender}")                # клиент написал - (пере)планируем
 
     reply = await think(sender, text, ig_sessions)
     if reply:
@@ -205,12 +221,10 @@ async def wa_incoming(request: Request):
 
             elif field == "smb_message_echoes":
                 # Coexistence: Наталья ответила ВРУЧНУЮ из приложения WhatsApp Business.
-                # (Аналог is_echo в Instagram.) Структуру подтвердим на тесте.
                 for m in value.get("message_echoes", []):
                     await _handle_wa_echo(m)
 
-            # Прочие поля Coexistence (history, smb_app_state_sync) пока пропускаем -
-            # синхронизацию истории/контактов не используем.
+            # Прочие поля Coexistence (history, smb_app_state_sync) пока пропускаем.
     return Response(content="EVENT_RECEIVED", media_type="text/plain")
 
 
@@ -227,6 +241,10 @@ async def _handle_wa_message(m: dict, phone_number_id: str = ""):
         logging.info("WA: чат с %s заглушён, пропускаю", sender)
         return
 
+    if phone_number_id:
+        _wa_pnid_by_user[sender] = phone_number_id       # запомнить, с какого номера отвечать
+    followups.on_incoming(f"wa:{sender}", is_whatsapp=True)   # клиент написал - планируем (с 24ч окном)
+
     reply = await think(sender, text, wa_sessions)
     if reply:
         await send_wa_message(sender, reply, phone_number_id)
@@ -240,19 +258,17 @@ async def _handle_wa_echo(m: dict):
         text = ((m.get("text") or {}).get("body") or "").strip().lower()
     if customer and text == STOP_WORD:
         muted_chats.add(customer)
+        followups.cancel(f"wa:{customer}")               # стоп-слово - снять follow-up
         logging.info("WA стоп-слово: бот замолчал в чате с %s", customer)
     elif customer:
+        followups.cancel(f"wa:{customer}")               # Наталья ответила сама - не дожимаем
         logging.info("WA: ручной ответ Натальи в чате с %s", customer)
 
 
 # ------------------------------- Общий "мозг" -------------------------------
 
 async def think(user_id: str, text: str, sessions: dict | None = None) -> str:
-    """Тот же мозг, что и в Telegram: классификатор -> субагент -> ответ.
-
-    sessions - хранилище диалогов канала. По умолчанию Instagram (обратная совместимость),
-    для WhatsApp передаём wa_sessions.
-    """
+    """Тот же мозг, что и в Telegram: классификатор -> субагент -> ответ."""
     if sessions is None:
         sessions = ig_sessions
     s = sessions.setdefault(user_id, {"history": [], "agent": None, "segment": None})
@@ -314,8 +330,7 @@ async def send_ig_message(recipient_id: str, text: str, account_id: str = ""):
 async def send_wa_message(to_wa_id: str, text: str, phone_number_id: str = ""):
     """Текстовый ответ в WhatsApp Cloud API.
 
-    Работает бесплатно внутри 24ч после сообщения клиента (сервисное окно) -
-    ровно наш кейс, клиент только что написал.
+    Работает бесплатно внутри 24ч после сообщения клиента (сервисное окно).
     """
     token = WHATSAPP_TOKEN
     pnid = phone_number_id or WHATSAPP_PHONE_NUMBER_ID
@@ -340,7 +355,6 @@ async def send_wa_message(to_wa_id: str, text: str, phone_number_id: str = ""):
 async def send_wa_document(to_wa_id: str, link: str, filename: str = "guide.pdf",
                            caption: str | None = None, phone_number_id: str = ""):
     """Отправка PDF по прямой ссылке. Задел под триггер-слова (кодовое слово -> PDF).
-    Пока нигде не вызывается; подключим, когда сделаем вкладку 'Триггеры' в таблице.
     Лимит WhatsApp: PDF до 25 МБ.
     """
     token = WHATSAPP_TOKEN
