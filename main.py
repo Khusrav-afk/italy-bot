@@ -1,14 +1,18 @@
 """
-Точка входа: запускает одновременно
-- FastAPI webhook-сервер (Instagram + WhatsApp) на порту $PORT
-- Telegram-бот (aiogram polling)
+Точка входа: запускает FastAPI-сервер, который обслуживает все каналы через вебхуки
+- Telegram (aiogram, POST /telegram)
+- Instagram Direct (POST /instagram)
+- WhatsApp Cloud API (POST /whatsapp)
 
-Добавление WhatsApp: просто добавь маршрут /whatsapp в webhook_server.py -
-main.py менять не нужно, он автоматически подхватит новый маршрут.
+Раньше Telegram работал через long polling (dp.start_polling), и на Render это
+приводило к TelegramConflictError при каждом деплое: пока новый инстанс уже
+стартовал, а старый ещё не остановился, оба одновременно опрашивали Telegram
+(getUpdates), а Telegram допускает только одно активное подключение на бота.
+Вебхук убирает эту гонку - Telegram сам шлёт апдейты на HTTP-эндпоинт, регистрация
+вебхука происходит при старте FastAPI (см. webhook_server.py).
 
-Защита от TelegramConflictError: перед стартом polling сбрасываем возможную
-зависшую getUpdates-сессию (drop_pending_updates), чтобы пересменка деплоев на
-Render не приводила к конфликту "terminated by other getUpdates request".
+Добавление нового канала: просто добавь маршрут в webhook_server.py - main.py
+менять не нужно, он автоматически подхватит новый маршрут.
 """
 import asyncio
 import os
@@ -19,25 +23,8 @@ import uvicorn
 logging.basicConfig(level=logging.INFO)
 
 
-async def run_telegram():
-    """Запускает Telegram-бот через polling."""
-    try:
-        from bot import bot, dp
-        # Сбрасываем зависшую сессию/вебхук перед стартом (защита от конфликта при редеплое).
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-        except Exception:
-            logging.exception("delete_webhook перед стартом не удался (не критично)")
-        logging.info("Telegram-бот запускается...")
-        await dp.start_polling(bot)
-    except Exception:
-        logging.exception("Telegram-бот упал, перезапускаем через 5 сек...")
-        await asyncio.sleep(5)
-        await run_telegram()
-
-
 async def run_webhook():
-    """Запускает FastAPI сервер (Instagram + WhatsApp + любые новые каналы)."""
+    """Запускает FastAPI сервер (Telegram + Instagram + WhatsApp, всё через вебхуки)."""
     try:
         from webhook_server import app
         port = int(os.getenv("PORT", 8000))
@@ -49,21 +36,13 @@ async def run_webhook():
             access_log=True,
         )
         server = uvicorn.Server(config)
-        logging.info("Webhook-сервер запускается на порту %s (Instagram + WhatsApp)...", port)
+        logging.info("Сервер запускается на порту %s (Telegram + Instagram + WhatsApp)...", port)
         await server.serve()
     except Exception:
-        logging.exception("Webhook-сервер упал, перезапускаем через 5 сек...")
+        logging.exception("Сервер упал, перезапускаем через 5 сек...")
         await asyncio.sleep(5)
         await run_webhook()
 
 
-async def main():
-    logging.info("Запуск всех каналов: Telegram + Instagram + WhatsApp (webhook)")
-    await asyncio.gather(
-        run_telegram(),
-        run_webhook(),
-    )
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_webhook())

@@ -26,13 +26,14 @@ import logging
 import os
 
 import httpx
+from aiogram.types import Update
 from fastapi import FastAPI, Request, Response
 
-# --- переиспользуем мозг из bot.py (Telegram-бот не запускается при импорте) ---
+# --- переиспользуем мозг из bot.py (Telegram-бот через вебхук, не через polling) ---
 from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
     AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD,
-    USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ,
+    USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
 )
 from followups import followups   # <-- follow-up цепочка
 
@@ -69,6 +70,15 @@ def _token_for(account_id: str) -> str:
     if account_id and account_id in IG_TOKENS:
         return IG_TOKENS[account_id]
     return IG_ACCESS_TOKEN
+
+
+# ========================= Telegram (webhook) =========================
+
+# Секрет для проверки заголовка X-Telegram-Bot-Api-Secret-Token у входящих запросов
+# от Telegram. Свой, per-bot, детерминированный от BOT_TOKEN - отдельная переменная
+# окружения на Render не нужна.
+TELEGRAM_WEBHOOK_SECRET = hashlib.sha256(f"tg-webhook:{bot.token}".encode()).hexdigest()
+TELEGRAM_WEBHOOK_PATH = "/telegram"
 
 
 # ========================= WhatsApp Cloud API =========================
@@ -114,6 +124,38 @@ async def _start_followups():
     followups.configure(send_func=_fu_send, tz=CALENDAR_TZ)
     await followups.start()
     await get_content()   # подтянуть тексты follow-up из таблицы (если заданы)
+
+
+@app.on_event("startup")
+async def _start_telegram_webhook():
+    """Регистрирует Telegram webhook вместо polling - убирает TelegramConflictError
+    при редеплое на Render (раньше старый и новый инстансы одновременно опрашивали
+    getUpdates, теперь апдейты просто шлются на HTTP-эндпоинт этого сервиса)."""
+    base_url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_BASE_URL", "")
+    if not base_url:
+        logging.warning(
+            "RENDER_EXTERNAL_URL/WEBHOOK_BASE_URL не заданы - Telegram webhook не "
+            "настроен (ожидаемо при локальном запуске)."
+        )
+        return
+    url = base_url.rstrip("/") + TELEGRAM_WEBHOOK_PATH
+    await bot.set_webhook(
+        url=url,
+        secret_token=TELEGRAM_WEBHOOK_SECRET,
+        drop_pending_updates=True,
+        allowed_updates=dp.resolve_used_update_types(),
+    )
+    logging.info("Telegram webhook установлен: %s", url)
+
+
+@app.post(TELEGRAM_WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
+    if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != TELEGRAM_WEBHOOK_SECRET:
+        return Response(status_code=403)
+    data = await request.json()
+    update = Update.model_validate(data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return Response(status_code=200)
 
 
 # ------------------------------- Instagram: маршруты -------------------------------
@@ -384,4 +426,4 @@ async def send_wa_document(to_wa_id: str, link: str, filename: str = "guide.pdf"
 
 @app.get("/")
 async def health():
-    return {"status": "ok", "channels": ["instagram", "whatsapp"]}
+    return {"status": "ok", "channels": ["telegram", "instagram", "whatsapp"]}
