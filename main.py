@@ -3,10 +3,13 @@
 - FastAPI webhook-сервер (Instagram + WhatsApp) на порту $PORT
 - Telegram-бот (aiogram polling)
 
-Добавление WhatsApp: просто добавь маршрут /whatsapp в webhook_server.py —
+Добавление WhatsApp: просто добавь маршрут /whatsapp в webhook_server.py -
 main.py менять не нужно, он автоматически подхватит новый маршрут.
-"""
 
+Защита от TelegramConflictError: перед стартом polling сбрасываем возможную
+зависшую getUpdates-сессию (drop_pending_updates), чтобы пересменка деплоев на
+Render не приводила к конфликту "terminated by other getUpdates request".
+"""
 import asyncio
 import os
 import logging
@@ -20,6 +23,11 @@ async def run_telegram():
     """Запускает Telegram-бот через polling."""
     try:
         from bot import bot, dp
+        # Сбрасываем зависшую сессию/вебхук перед стартом (защита от конфликта при редеплое).
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            logging.exception("delete_webhook перед стартом не удался (не критично)")
         logging.info("Telegram-бот запускается...")
         await dp.start_polling(bot)
     except Exception:
