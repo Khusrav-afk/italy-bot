@@ -103,13 +103,24 @@ wa_sessions: dict[str, dict] = {}
 _wa_pnid_by_user: dict[str, str] = {}
 
 
-# ---------- Follow-up: единая отправка для IG и WA ----------
+# ---------- Follow-up: единая отправка для Telegram, IG и WA ----------
 async def _fu_send(chat_key: str, text: str):
-    """Как follow-up отправляет сообщение. chat_key: 'ig:<id>' или 'wa:<wa_id>'."""
+    """Как follow-up отправляет сообщение. chat_key: 'tg:<chat_id>' / 'ig:<id>' / 'wa:<wa_id>'."""
     try:
         channel, uid = chat_key.split(":", 1)
     except ValueError:
         return
+
+    if channel == "tg":
+        try:
+            chat_id = int(uid)
+        except ValueError:
+            return
+        if chat_id in muted_chats:   # muted_chats для Telegram хранит int chat_id
+            return
+        await bot.send_message(chat_id, sanitize(text))
+        return
+
     if uid in muted_chats:          # Наталья вмешалась вручную - молчим
         return
     if channel == "ig":

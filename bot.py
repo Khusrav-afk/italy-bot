@@ -342,18 +342,6 @@ async def classify(history, current):
         return current or "freeform", "premium"
 
 
-# ---------- Follow-up: отправка в Telegram ----------
-async def _fu_send_tg(chat_key: str, text: str):
-    """Как follow-up отправляет сообщение в Telegram. chat_key вида 'tg:123456'."""
-    try:
-        chat_id = int(chat_key.split(":", 1)[1])
-    except (ValueError, IndexError):
-        return
-    if chat_id in muted_chats:      # Наталья заглушила чат - не достаём клиента
-        return
-    await bot.send_message(chat_id, sanitize(text))
-
-
 # ---------- Хэндлеры ----------
 @dp.message(CommandStart())
 async def on_start(message: Message):
@@ -571,15 +559,3 @@ def format_lead(lead):
     return "\n".join(lines)
 
 
-async def main():
-    # Follow-up: настроить и запустить планировщик до старта поллинга.
-    followups.configure(send_func=_fu_send_tg, tz=CALENDAR_TZ)
-    await followups.start()
-    await get_content()   # подтянуть тексты follow-up из таблицы (если есть)
-    logging.info("Мультиагент запущен. Субагентов: %d | Sheets: %s | Calendar: %s",
-                 len(AGENTS), "вкл" if _sheets_on else "выкл", "вкл" if _calendar_on else "выкл")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
