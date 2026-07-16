@@ -4,7 +4,7 @@ Follow-up (дожим молчащих клиентов).
 Если клиент замолчал (не ответил), бот сам напоминает о себе по расписанию:
     1) через 7 минут после последнего сообщения клиента,
     2) через 3 часа,
-    3) в 20:00 (по времени Италии).
+    3) через 20 часов.
 Цель — не потерять лид.
 
 Работает для всех каналов (Telegram / Instagram / WhatsApp): канал не знает деталей
@@ -17,7 +17,7 @@ follow-up, он только даёт функцию отправки. План�
 
 ОГРАНИЧЕНИЕ (осознанное, т.к. без БД): состояние в памяти. При перезапуске процесса
 (Render засыпает на free-плане) запланированные задачи теряются. Для +7 мин это почти
-всегда не проблема; для +3ч и 20:00 — возможен пропуск после сна. Если понадобится
+всегда не проблема; для +3ч и +20ч — возможен пропуск после сна. Если понадобится
 надёжность — вынести планировщик в персистентный jobstore (SQLAlchemy/Redis).
 
 Подключение (см.低 в конце файла — примеры для bot.py и webhook_server.py):
@@ -113,11 +113,8 @@ class FollowupManager:
         self._schedule_at(chat_key, "m1", now + timedelta(minutes=7))
         # 2) через 3 часа
         self._schedule_at(chat_key, "m2", now + timedelta(hours=3))
-        # 3) ближайшие 20:00 (сегодня, если ещё не наступили; иначе завтра)
-        run_20 = now.replace(hour=20, minute=0, second=0, microsecond=0)
-        if run_20 <= now:
-            run_20 += timedelta(days=1)
-        self._schedule_at(chat_key, "m3", run_20)
+        # 3) через 20 часов
+        self._schedule_at(chat_key, "m3", now + timedelta(hours=20))
 
     def _schedule_at(self, chat_key: str, stage: str, run_dt: datetime):
         from apscheduler.triggers.date import DateTrigger
