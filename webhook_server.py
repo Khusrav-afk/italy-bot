@@ -213,7 +213,7 @@ async def _handle_event(ev: dict, account_id: str = ""):
     if msg.get("is_echo"):
         recipient = (ev.get("recipient") or {}).get("id")
         text = (msg.get("text") or "").strip().lower()
-        if recipient and text == STOP_WORD:
+        if recipient and STOP_WORD in text:
             muted_chats.add(recipient)
             followups.cancel(f"ig:{recipient}")          # стоп-слово - снять follow-up
             logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
@@ -309,7 +309,7 @@ async def _handle_wa_echo(m: dict):
     text = ""
     if m.get("type") == "text":
         text = ((m.get("text") or {}).get("body") or "").strip().lower()
-    if customer and text == STOP_WORD:
+    if customer and STOP_WORD in text:
         muted_chats.add(customer)
         followups.cancel(f"wa:{customer}")               # стоп-слово - снять follow-up
         logging.info("WA стоп-слово: бот замолчал в чате с %s", customer)

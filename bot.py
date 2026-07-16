@@ -388,7 +388,7 @@ async def on_text(message: Message):
     # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит.
     if chat_id in muted_chats:
         return
-    if message.text.strip().lower() == STOP_WORD:
+    if STOP_WORD in message.text.strip().lower():
         muted_chats.add(chat_id)
         followups.cancel(f"tg:{chat_id}")        # Наталья вмешалась - снять follow-up
         logging.info("Стоп-слово в чате %s - бот замолчал", chat_id)
