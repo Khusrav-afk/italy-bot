@@ -45,7 +45,7 @@ dp = Dispatcher()
 sessions: dict[int, dict] = {}
 muted_chats: set = set()          # чаты, где Наталья написала стоп-слово - бот молчит
 STOP_WORD = os.getenv("STOP_WORD", "un attimo").strip().lower()
-RESUME_WORD = os.getenv("RESUME_WORD", "avanti pure").strip().lower()  # снять стоп-слово
+RESUME_WORD = os.getenv("RESUME_WORD", "✅✅✅").strip().lower()  # снять стоп-слово
 USE_WEB_SEARCH = os.getenv("USE_WEB_SEARCH", "1") == "1"
 WEB_SEARCH_TOOL = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 LEAD_RE = re.compile(r"\[LEAD\](.*?)\[/LEAD\]", re.S)
