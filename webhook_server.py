@@ -34,6 +34,7 @@ from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
     AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD, RESUME_WORD,
     USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
+    save_lead, handle_booking,
 )
 from followups import followups   # <-- follow-up цепочка
 
@@ -235,7 +236,7 @@ async def _handle_event(ev: dict, account_id: str = ""):
 
     followups.on_incoming(f"ig:{sender}")                # клиент написал - (пере)планируем
 
-    reply = await think(sender, text, ig_sessions)
+    reply = await think(sender, text, ig_sessions, "ig")
     if reply:
         await send_ig_message(sender, reply, account_id)
 
@@ -301,7 +302,7 @@ async def _handle_wa_message(m: dict, phone_number_id: str = ""):
         _wa_pnid_by_user[sender] = phone_number_id       # запомнить, с какого номера отвечать
     followups.on_incoming(f"wa:{sender}", is_whatsapp=True)   # клиент написал - планируем (с 24ч окном)
 
-    reply = await think(sender, text, wa_sessions)
+    reply = await think(sender, text, wa_sessions, "wa")
     if reply:
         await send_wa_message(sender, reply, phone_number_id)
 
@@ -326,7 +327,7 @@ async def _handle_wa_echo(m: dict):
 
 # ------------------------------- Общий "мозг" -------------------------------
 
-async def think(user_id: str, text: str, sessions: dict | None = None) -> str:
+async def think(user_id: str, text: str, sessions: dict | None = None, channel: str = "ig") -> str:
     """Тот же мозг, что и в Telegram: классификатор -> субагент -> ответ."""
     if sessions is None:
         sessions = ig_sessions
@@ -354,14 +355,22 @@ async def think(user_id: str, text: str, sessions: dict | None = None) -> str:
     reply = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
     s["history"].append({"role": "assistant", "content": reply})
 
-    # Лиды/брони: вырезаем служебные блоки из текста клиента.
+    # Лиды/брони: вырезаем служебные блоки из текста клиента и сохраняем (таблица + менеджеру).
     m = LEAD_RE.search(reply)
     if m:
-        logging.info("LEAD: %s", m.group(1).strip())
+        raw = m.group(1).strip()
+        try:
+            lead = json.loads(raw)
+        except json.JSONDecodeError:
+            lead = {"summary": raw}
+        lead["agent"] = AGENTS.get(agent, agent)
+        lead["segment"] = segment
+        label = "Instagram" if channel == "ig" else "WhatsApp"
+        await save_lead(lead, f"{label}: {user_id}")
         reply = LEAD_RE.sub("", reply).strip()
     b = BOOKING_RE.search(reply)
     if b:
-        logging.info("BOOKING: %s", b.group(1).strip())
+        await handle_booking(b.group(1).strip())
         reply = BOOKING_RE.sub("", reply).strip()
 
     return sanitize(reply)

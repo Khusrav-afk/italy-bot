@@ -443,7 +443,7 @@ async def on_text(message: Message):
         reply = LEAD_RE.sub("", reply).strip()
     book = BOOKING_RE.search(reply)
     if book:
-        await handle_booking(message, book.group(1).strip())
+        await handle_booking(book.group(1).strip())
         reply = BOOKING_RE.sub("", reply).strip()
 
     reply = sanitize(reply)
@@ -463,15 +463,10 @@ def _safe(v) -> str:
     return "'" + s if s[:1] in ("=", "+", "-", "@") else s
 
 
-async def handle_lead(message: Message, raw, agent, segment):
-    try:
-        lead = json.loads(raw)
-    except json.JSONDecodeError:
-        lead = {"summary": raw}
-    lead["agent"] = AGENTS.get(agent, agent)
-    lead["segment"] = segment
-    lead["tg_user"] = message.from_user.full_name
-    lead["tg_username"] = message.from_user.username or ""
+async def save_lead(lead: dict, source: str):
+    """Сохранить лид (jsonl + таблица + уведомление менеджеру). Канало-независимо -
+    вызывается и из Telegram (handle_lead), и из Instagram/WhatsApp (webhook_server.think)."""
+    lead["source"] = source
     lead["time"] = datetime.now().isoformat(timespec="seconds")
     with open("leads.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(lead, ensure_ascii=False) + "\n")
@@ -487,6 +482,17 @@ async def handle_lead(message: Message, raw, agent, segment):
             logging.exception("manager lead failed")
 
 
+async def handle_lead(message: Message, raw, agent, segment):
+    try:
+        lead = json.loads(raw)
+    except json.JSONDecodeError:
+        lead = {"summary": raw}
+    lead["agent"] = AGENTS.get(agent, agent)
+    lead["segment"] = segment
+    source = f"{message.from_user.full_name} (@{message.from_user.username or '-'})"
+    await save_lead(lead, source)
+
+
 def _append_lead_row(lead):
     ws = _open_sheet().worksheet("Лиды")
     row = [lead.get("time", ""), lead.get("agent", ""), lead.get("segment", ""),
@@ -494,11 +500,11 @@ def _append_lead_row(lead):
            lead.get("people", ""), lead.get("city", ""), lead.get("budget", ""),
            lead.get("services", ""), lead.get("language", ""), lead.get("contact", ""),
            lead.get("urgency", ""), lead.get("status", ""), lead.get("summary", ""),
-           f"{lead.get('tg_user','')} (@{lead.get('tg_username','') or '-'})"]
+           lead.get("source", "")]
     ws.append_row([_safe(c) for c in row], value_input_option="USER_ENTERED")
 
 
-async def handle_booking(message: Message, raw):
+async def handle_booking(raw):
     try:
         b = json.loads(raw)
     except json.JSONDecodeError:
