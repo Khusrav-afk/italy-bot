@@ -45,6 +45,7 @@ dp = Dispatcher()
 sessions: dict[int, dict] = {}
 muted_chats: set = set()          # чаты, где Наталья написала стоп-слово - бот молчит
 STOP_WORD = os.getenv("STOP_WORD", "un attimo").strip().lower()
+RESUME_WORD = os.getenv("RESUME_WORD", "avanti pure").strip().lower()  # снять стоп-слово
 USE_WEB_SEARCH = os.getenv("USE_WEB_SEARCH", "1") == "1"
 WEB_SEARCH_TOOL = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 LEAD_RE = re.compile(r"\[LEAD\](.*?)\[/LEAD\]", re.S)
@@ -387,10 +388,15 @@ async def on_caltest(message: Message):
 @dp.message(F.text)
 async def on_text(message: Message):
     chat_id = message.chat.id
-    # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит.
+    text_lower = message.text.strip().lower()
+    # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит,
+    # пока не придёт слово-разрешение (RESUME_WORD).
     if chat_id in muted_chats:
+        if RESUME_WORD in text_lower:
+            muted_chats.discard(chat_id)
+            logging.info("Стоп-слово снято в чате %s - бот снова отвечает", chat_id)
         return
-    if STOP_WORD in message.text.strip().lower():
+    if STOP_WORD in text_lower:
         muted_chats.add(chat_id)
         followups.cancel(f"tg:{chat_id}")        # Наталья вмешалась - снять follow-up
         logging.info("Стоп-слово в чате %s - бот замолчал", chat_id)

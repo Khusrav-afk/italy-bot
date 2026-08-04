@@ -32,7 +32,7 @@ from fastapi import FastAPI, Request, Response
 # --- переиспользуем мозг из bot.py (Telegram-бот через вебхук, не через polling) ---
 from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
-    AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD,
+    AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD, RESUME_WORD,
     USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
 )
 from followups import followups   # <-- follow-up цепочка
@@ -217,6 +217,9 @@ async def _handle_event(ev: dict, account_id: str = ""):
             muted_chats.add(recipient)
             followups.cancel(f"ig:{recipient}")          # стоп-слово - снять follow-up
             logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
+        elif recipient and RESUME_WORD in text:
+            muted_chats.discard(recipient)
+            logging.info("IG стоп-слово снято - бот снова отвечает в чате с %s", recipient)
         elif recipient:
             followups.cancel(f"ig:{recipient}")          # Наталья ответила сама - не дожимаем
             logging.info("IG: ручной ответ Натальи в чате с %s", recipient)
@@ -313,6 +316,9 @@ async def _handle_wa_echo(m: dict):
         muted_chats.add(customer)
         followups.cancel(f"wa:{customer}")               # стоп-слово - снять follow-up
         logging.info("WA стоп-слово: бот замолчал в чате с %s", customer)
+    elif customer and RESUME_WORD in text:
+        muted_chats.discard(customer)
+        logging.info("WA стоп-слово снято - бот снова отвечает в чате с %s", customer)
     elif customer:
         followups.cancel(f"wa:{customer}")               # Наталья ответила сама - не дожимаем
         logging.info("WA: ручной ответ Натальи в чате с %s", customer)
