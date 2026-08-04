@@ -4,7 +4,7 @@ ItalySecretPlaces - мультиагентная система (демо в Tel
 Классификатор определяет тему и сегмент -> передаёт диалог одному из 6 субагентов.
 У каждого субагента СВОЯ вкладка-база знаний в Google Sheets (плюс общие вкладки).
 Лиды -> Sheets + Telegram. Бронь экскурсий -> Google Calendar.
-Follow-up: если клиент замолчал - напоминаем через 7 мин / 3 часа / 20 часов (followups.py).
+Follow-up: если клиент замолчал - напоминаем через 7 мин / 3 часа / 5 часов / 20 часов (followups.py).
 """
 
 import asyncio
@@ -105,6 +105,7 @@ DEFAULTS = {
     "Follow-up 1": "",
     "Follow-up 2": "",
     "Follow-up 3": "",
+    "Follow-up 4": "",
 }
 DEFAULT_FAQ: list = []
 DEFAULT_KB: list = []
@@ -280,6 +281,7 @@ def _apply_followup_texts(settings: dict):
         "m1": settings.get("Follow-up 1", ""),
         "m2": settings.get("Follow-up 2", ""),
         "m3": settings.get("Follow-up 3", ""),
+        "m4": settings.get("Follow-up 4", ""),
     })
 
 
