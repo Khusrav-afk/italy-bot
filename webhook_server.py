@@ -32,7 +32,7 @@ from fastapi import FastAPI, Request, Response
 # --- переиспользуем мозг из bot.py (Telegram-бот через вебхук, не через polling) ---
 from bot import (
     get_content, classify, build_prompt, sanitize, claude, MODEL,
-    AGENTS, LEAD_RE, BOOKING_RE, muted_chats, STOP_WORD, RESUME_WORD,
+    AGENTS, LEAD_RE, BOOKING_RE, CLOSE_RE, muted_chats, STOP_WORD, RESUME_WORD,
     USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
     save_lead, handle_booking,
 )
@@ -102,6 +102,19 @@ wa_sessions: dict[str, dict] = {}
 # Карта "wa_id клиента -> phone_number_id", через который пришло его сообщение.
 # Нужна, чтобы follow-up знал, с какого номера отправлять ответ этому клиенту.
 _wa_pnid_by_user: dict[str, str] = {}
+
+# ID уже обработанных сообщений (IG mid / WA id) - Meta может повторно доставить один и тот
+# же вебхук (retry при таймауте/сбое), без этого клиент получал бы задвоенные ответы.
+_seen_msg_ids: set[str] = set()
+
+
+def _already_seen(msg_id: str | None) -> bool:
+    if not msg_id:
+        return False
+    if msg_id in _seen_msg_ids:
+        return True
+    _seen_msg_ids.add(msg_id)
+    return False
 
 
 # ---------- Follow-up: единая отправка для Telegram, IG и WA ----------
@@ -210,6 +223,9 @@ async def incoming(request: Request):
 
 async def _handle_event(ev: dict, account_id: str = ""):
     msg = ev.get("message") or {}
+    if _already_seen(msg.get("mid")):
+        logging.info("IG: дубликат сообщения %s, пропускаю", msg.get("mid"))
+        return
     # Эхо: сообщение, отправленное самим бизнес-аккаунтом (Наталья пишет вручную с телефона).
     if msg.get("is_echo"):
         recipient = (ev.get("recipient") or {}).get("id")
@@ -286,6 +302,9 @@ async def wa_incoming(request: Request):
 
 
 async def _handle_wa_message(m: dict, phone_number_id: str = ""):
+    if _already_seen(m.get("id")):
+        logging.info("WA: дубликат сообщения %s, пропускаю", m.get("id"))
+        return
     # Пока обрабатываем только текст. Медиа/документы - задел на будущее.
     if m.get("type") != "text":
         logging.info("WA: не-текстовое сообщение type=%s, пропускаю", m.get("type"))
@@ -309,6 +328,9 @@ async def _handle_wa_message(m: dict, phone_number_id: str = ""):
 
 async def _handle_wa_echo(m: dict):
     """Эхо ручного ответа Натальи из приложения (Coexistence): гасим бота в этом чате."""
+    if _already_seen(m.get("id")):
+        logging.info("WA echo: дубликат сообщения %s, пропускаю", m.get("id"))
+        return
     customer = m.get("to")  # с кем Наталья переписывается
     text = ""
     if m.get("type") == "text":
@@ -372,6 +394,9 @@ async def think(user_id: str, text: str, sessions: dict | None = None, channel: 
     if b:
         await handle_booking(b.group(1).strip())
         reply = BOOKING_RE.sub("", reply).strip()
+    if CLOSE_RE.search(reply):
+        followups.cancel(f"{channel}:{user_id}")   # клиент явно попрощался - не напоминаем
+        reply = CLOSE_RE.sub("", reply).strip()
 
     return sanitize(reply)
 

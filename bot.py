@@ -50,6 +50,7 @@ USE_WEB_SEARCH = os.getenv("USE_WEB_SEARCH", "1") == "1"
 WEB_SEARCH_TOOL = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 LEAD_RE = re.compile(r"\[LEAD\](.*?)\[/LEAD\]", re.S)
 BOOKING_RE = re.compile(r"\[BOOKING\](.*?)\[/BOOKING\]", re.S)
+CLOSE_RE = re.compile(r"\[CLOSE\]")
 JSON_RE = re.compile(r"\{.*\}", re.S)
 EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
@@ -171,6 +172,13 @@ BASE_TEMPLATE = """\
 передаёшь Наталье, и добавь в конце служебный блок (клиент не увидит):
 [LEAD]{"direction":"","name":"","dates":"","duration":"","people":"","city":"","budget":"","services":"","language":"ru","contact":"","urgency":"","status":"warm","summary":""}[/LEAD]
 Выдавай [LEAD] один раз.
+
+ЗАВЕРШЕНИЕ РАЗГОВОРА: если клиент явно прощается или завершает разговор (благодарит и не
+задаёт вопросов, говорит "вернусь позже/сам напишу/подумаю и вернусь" и т.п.) - вежливо
+попрощайся и добавь в конце служебный блок (клиент не увидит): [CLOSE]
+Это отключает автоматические напоминания для этого диалога, чтобы не беспокоить клиента,
+который уже сказал, что вернётся сам. НЕ добавляй [CLOSE], если клиент просто не ответил на
+твой вопрос - это не то же самое, что явное прощание.
 """
 
 SUBAGENTS = {
@@ -445,6 +453,9 @@ async def on_text(message: Message):
     if book:
         await handle_booking(book.group(1).strip())
         reply = BOOKING_RE.sub("", reply).strip()
+    if CLOSE_RE.search(reply):
+        followups.cancel(f"tg:{chat_id}")   # клиент явно попрощался - не беспокоим напоминаниями
+        reply = CLOSE_RE.sub("", reply).strip()
 
     reply = sanitize(reply)
     if SHOW_AGENT:
