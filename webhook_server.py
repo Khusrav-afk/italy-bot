@@ -31,7 +31,7 @@ from fastapi import FastAPI, Request, Response
 
 # --- переиспользуем мозг из bot.py (Telegram-бот через вебхук, не через polling) ---
 from bot import (
-    get_content, classify, build_prompt, sanitize, claude, MODEL,
+    get_content, classify, build_prompt, detect_excursion_city, sanitize, claude, MODEL,
     AGENTS, LEAD_RE, BOOKING_RE, CLOSE_RE, muted_chats, STOP_WORD, RESUME_WORD,
     USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
     save_lead, handle_booking,
@@ -364,7 +364,8 @@ async def think(user_id: str, text: str, sessions: dict | None = None, channel: 
     s["agent"], s["segment"] = agent, segment
     logging.info("Маршрут: %s | сегмент: %s", AGENTS.get(agent, agent), segment)
 
-    system_prompt = build_prompt(agent, segment, settings, faq, kb, sub)
+    excursion_city = detect_excursion_city(s["history"]) if agent == "excursions" else None
+    system_prompt = build_prompt(agent, segment, settings, faq, kb, sub, excursion_city)
     try:
         kwargs = dict(model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
         if USE_WEB_SEARCH:

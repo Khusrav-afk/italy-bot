@@ -68,7 +68,6 @@ AGENTS = {
     "freeform": "Свободный запрос",
 }
 AGENT_TABS = {
-    "excursions": "Экскурсии",
     "housing": "Жильё",
     "transfers": "Трансферы",
     "turnkey": "Отдых под ключ",
@@ -76,6 +75,10 @@ AGENT_TABS = {
     "vip": "VIP",
     "freeform": "Свободный запрос",
 }
+
+# Экскурсии разбиты по отдельным вкладкам (по одной на город) вместо одной общей "Экскурсии".
+# Первый город в списке - используется по умолчанию, если клиент город ещё не назвал.
+EXCURSION_CITIES = ["Венеция", "Рим", "Флоренция", "Милан", "Неаполь"]
 
 
 def sanitize(text: str) -> str:
@@ -184,7 +187,10 @@ BASE_TEMPLATE = """\
 """
 
 SUBAGENTS = {
-    "excursions": "ТВОЯ РОЛЬ: субагент ЭКСКУРСИИ. ПЕРВЫМ делом уточни: групповые или индивидуальные "
+    "excursions": "ТВОЯ РОЛЬ: субагент ЭКСКУРСИИ. ЗНАНИЯ НАПРАВЛЕНИЯ ниже уже отфильтрованы по "
+    "городу, который назвал клиент (или по городу по умолчанию, если ещё не называл) - искать "
+    "по другим городам в них не нужно, там только один город. "
+    "ПЕРВЫМ делом уточни: групповые или индивидуальные "
     "экскурсии и сколько человек. "
     "ЕСЛИ ГРУППОВЫЕ - дай ссылку на бронь групповых из знаний направления, предложи помощь; при "
     "интересе возьми имя и контакт. "
@@ -283,6 +289,13 @@ def _read_sheet():
             sub[key] = _col_a(sh.worksheet(tab))
         except Exception:
             sub[key] = []
+    excursions_by_city = {}
+    for city in EXCURSION_CITIES:
+        try:
+            excursions_by_city[city] = _col_a(sh.worksheet(city))
+        except Exception:
+            excursions_by_city[city] = []
+    sub["excursions_by_city"] = excursions_by_city
     return settings, faq, kb, sub
 
 
@@ -316,10 +329,31 @@ async def get_content():
         return DEFAULTS, DEFAULT_FAQ, DEFAULT_KB, DEFAULT_SUBKB
 
 
-def build_prompt(agent, segment, settings, faq, kb, sub):
+def detect_excursion_city(history) -> str:
+    """Ищет в сообщениях клиента последнее упоминание города из EXCURSION_CITIES
+    (без учёта регистра). Если ничего не найдено - город по умолчанию (первый в списке)."""
+    found = None
+    for msg in history:
+        if msg.get("role") != "user":
+            continue
+        text = (msg.get("content") or "").lower()
+        for city in EXCURSION_CITIES:
+            if city.lower() in text:
+                found = city
+    return found or EXCURSION_CITIES[0]
+
+
+def build_prompt(agent, segment, settings, faq, kb, sub, excursion_city=None):
     faq_text = "\n".join(f"В: {q}\nО: {a}" for q, a in faq) or "-"
     kb_text = "\n".join(f"- {x}" for x in kb) or "-"
-    sub_text = "\n".join(f"- {x}" for x in sub.get(agent, [])) or "-"
+    if agent == "excursions":
+        city = excursion_city or EXCURSION_CITIES[0]
+        sub_items = sub.get("excursions_by_city", {}).get(city, [])
+        sub_label = f"{AGENTS[agent]} - {city}"
+    else:
+        sub_items = sub.get(agent, [])
+        sub_label = AGENTS[agent]
+    sub_text = "\n".join(f"- {x}" for x in sub_items) or "-"
     style = settings.get("Примеры стиля", "")
     style_block = ("\nОРИЕНТИР ПО СТИЛЮ:\n" + style) if style else ""
     base = (BASE_TEMPLATE
@@ -334,7 +368,7 @@ def build_prompt(agent, segment, settings, faq, kb, sub):
             .replace("@@KNOWLEDGE@@", kb_text)
             .replace("@@FAQ@@", faq_text))
     return (f"{base}\n\n{SUBAGENTS[agent]}\n\n"
-            f"ЗНАНИЯ НАПРАВЛЕНИЯ «{AGENTS[agent]}» (используй в первую очередь):\n{sub_text}\n\n"
+            f"ЗНАНИЯ НАПРАВЛЕНИЯ «{sub_label}» (используй в первую очередь):\n{sub_text}\n\n"
             f"СЕГМЕНТ КЛИЕНТА: {segment} - подстрой уровень предложений и тон.")
 
 
@@ -433,7 +467,8 @@ async def on_text(message: Message):
         except Exception:
             logging.exception("route note failed")
 
-    system_prompt = build_prompt(agent, segment, settings, faq, kb, sub)
+    excursion_city = detect_excursion_city(s["history"]) if agent == "excursions" else None
+    system_prompt = build_prompt(agent, segment, settings, faq, kb, sub, excursion_city)
     try:
         kwargs = dict(model=MODEL, max_tokens=1024, system=system_prompt, messages=s["history"])
         if USE_WEB_SEARCH:
