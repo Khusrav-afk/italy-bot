@@ -32,7 +32,7 @@ from fastapi import FastAPI, Request, Response
 # --- переиспользуем мозг из bot.py (Telegram-бот через вебхук, не через polling) ---
 from bot import (
     get_content, classify, build_prompt, detect_excursion_city, sanitize, claude, MODEL,
-    AGENTS, LEAD_RE, BOOKING_RE, CLOSE_RE, muted_chats, STOP_WORD, RESUME_WORD,
+    AGENTS, LEAD_RE, BOOKING_RE, CLOSE_RE, muted_chats, WORDS,
     USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
     save_lead, handle_booking,
 )
@@ -230,11 +230,11 @@ async def _handle_event(ev: dict, account_id: str = ""):
     if msg.get("is_echo"):
         recipient = (ev.get("recipient") or {}).get("id")
         text = (msg.get("text") or "").strip().lower()
-        if recipient and STOP_WORD in text:
+        if recipient and WORDS["stop"] in text:
             muted_chats.add(recipient)
             followups.cancel(f"ig:{recipient}")          # стоп-слово - снять follow-up
             logging.info("IG стоп-слово: бот замолчал в чате с %s", recipient)
-        elif recipient and RESUME_WORD in text:
+        elif recipient and WORDS["resume"] in text:
             muted_chats.discard(recipient)
             logging.info("IG стоп-слово снято - бот снова отвечает в чате с %s", recipient)
         elif recipient:
@@ -335,11 +335,11 @@ async def _handle_wa_echo(m: dict):
     text = ""
     if m.get("type") == "text":
         text = ((m.get("text") or {}).get("body") or "").strip().lower()
-    if customer and STOP_WORD in text:
+    if customer and WORDS["stop"] in text:
         muted_chats.add(customer)
         followups.cancel(f"wa:{customer}")               # стоп-слово - снять follow-up
         logging.info("WA стоп-слово: бот замолчал в чате с %s", customer)
-    elif customer and RESUME_WORD in text:
+    elif customer and WORDS["resume"] in text:
         muted_chats.discard(customer)
         logging.info("WA стоп-слово снято - бот снова отвечает в чате с %s", customer)
     elif customer:

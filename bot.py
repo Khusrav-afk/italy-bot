@@ -44,8 +44,12 @@ dp = Dispatcher()
 
 sessions: dict[int, dict] = {}
 muted_chats: set = set()          # чаты, где Наталья написала стоп-слово - бот молчит
-STOP_WORD = os.getenv("STOP_WORD", "un attimo").strip().lower()
-RESUME_WORD = os.getenv("RESUME_WORD", "✅✅✅").strip().lower()  # снять стоп-слово
+# Изменяемый словарь (не константы!) - можно переопределить из таблицы, вкладка "Настройки"
+# (см. _apply_words). webhook_server.py импортирует этот же объект, мутация видна везде.
+WORDS = {
+    "stop": os.getenv("STOP_WORD", "un attimo").strip().lower(),
+    "resume": os.getenv("RESUME_WORD", "✅✅✅").strip().lower(),
+}
 USE_WEB_SEARCH = os.getenv("USE_WEB_SEARCH", "1") == "1"
 WEB_SEARCH_TOOL = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 LEAD_RE = re.compile(r"\[LEAD\](.*?)\[/LEAD\]", re.S)
@@ -111,6 +115,9 @@ DEFAULTS = {
     "Follow-up 2": "",
     "Follow-up 3": "",
     "Follow-up 4": "",
+    # Стоп-слово / слово-разрешение (пустое -> остаётся значение по умолчанию из кода)
+    "Стоп-слово": "",
+    "Слово-разрешение": "",
 }
 DEFAULT_FAQ: list = []
 DEFAULT_KB: list = []
@@ -309,9 +316,20 @@ def _apply_followup_texts(settings: dict):
     })
 
 
+def _apply_words(settings: dict):
+    """Обновить стоп-слово/слово-разрешение из настроек (пустое - оставляем текущее)."""
+    stop = settings.get("Стоп-слово", "").strip().lower()
+    if stop:
+        WORDS["stop"] = stop
+    resume = settings.get("Слово-разрешение", "").strip().lower()
+    if resume:
+        WORDS["resume"] = resume
+
+
 async def get_content():
     if not _sheets_on:
         _apply_followup_texts(DEFAULTS)
+        _apply_words(DEFAULTS)
         return DEFAULTS, DEFAULT_FAQ, DEFAULT_KB, DEFAULT_SUBKB
     if _cache["settings"] and time.time() - _cache["ts"] < CACHE_TTL:
         return _cache["settings"], _cache["faq"], _cache["kb"], _cache["sub"]
@@ -320,12 +338,14 @@ async def get_content():
         merged = {**DEFAULTS, **{k: v for k, v in settings.items() if v}}
         _cache.update(settings=merged, faq=faq, kb=kb, sub=sub, ts=time.time())
         _apply_followup_texts(merged)
+        _apply_words(merged)
         return merged, faq, kb, sub
     except Exception:
         logging.exception("Не удалось прочитать таблицу")
         if _cache["settings"]:
             return _cache["settings"], _cache["faq"], _cache["kb"], _cache["sub"]
         _apply_followup_texts(DEFAULTS)
+        _apply_words(DEFAULTS)
         return DEFAULTS, DEFAULT_FAQ, DEFAULT_KB, DEFAULT_SUBKB
 
 
@@ -434,13 +454,13 @@ async def on_text(message: Message):
     chat_id = message.chat.id
     text_lower = message.text.strip().lower()
     # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит,
-    # пока не придёт слово-разрешение (RESUME_WORD).
+    # пока не придёт слово-разрешение (WORDS["resume"]).
     if chat_id in muted_chats:
-        if RESUME_WORD in text_lower:
+        if WORDS["resume"] in text_lower:
             muted_chats.discard(chat_id)
             logging.info("Стоп-слово снято в чате %s - бот снова отвечает", chat_id)
         return
-    if STOP_WORD in text_lower:
+    if WORDS["stop"] in text_lower:
         muted_chats.add(chat_id)
         followups.cancel(f"tg:{chat_id}")        # Наталья вмешалась - снять follow-up
         logging.info("Стоп-слово в чате %s - бот замолчал", chat_id)
