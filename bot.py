@@ -30,9 +30,12 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID")
 MODEL = os.getenv("MODEL", "claude-sonnet-4-6")
 SHOW_AGENT = os.getenv("SHOW_AGENT", "0") == "1"   # демо: показывать субагента/маршрутизацию
-# Общий рубильник. По умолчанию ВЫКЛЮЧЕН - бот молчит во всех каналах (Telegram/IG/WA).
-# Чтобы включить бота - задать в окружении (Render) BOT_ENABLED=1 и передеплоить.
-BOT_ENABLED = os.getenv("BOT_ENABLED", "0") == "1"
+# ===================== РУБИЛЬНИК БОТА =====================
+# False - бот ВЫКЛЮЧЕН и молчит во всех каналах (Telegram / Instagram / WhatsApp).
+# Чтобы ВКЛЮЧИТЬ бота обратно: поменять на True, закоммитить и запушить в GitHub
+# (Render передеплоит сам, если включён Auto-Deploy; иначе - Manual Deploy).
+BOT_ENABLED = False
+# =========================================================
 
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "service_account.json")
