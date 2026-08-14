@@ -507,6 +507,7 @@ async def on_text(message: Message):
     lead = LEAD_RE.search(reply)
     if lead:
         await handle_lead(message, lead.group(1).strip(), agent, segment)
+        followups.cancel(f"tg:{chat_id}")   # заявка собрана и передана Наталье - не дожимаем клиента
         reply = LEAD_RE.sub("", reply).strip()
     book = BOOKING_RE.search(reply)
     if book:

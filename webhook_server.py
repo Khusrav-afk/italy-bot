@@ -390,6 +390,7 @@ async def think(user_id: str, text: str, sessions: dict | None = None, channel: 
         lead["segment"] = segment
         label = "Instagram" if channel == "ig" else "WhatsApp"
         await save_lead(lead, f"{label}: {user_id}")
+        followups.cancel(f"{channel}:{user_id}")   # заявка собрана и передана Наталье - не дожимаем клиента
         reply = LEAD_RE.sub("", reply).strip()
     b = BOOKING_RE.search(reply)
     if b:
