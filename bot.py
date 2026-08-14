@@ -30,6 +30,9 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID")
 MODEL = os.getenv("MODEL", "claude-sonnet-4-6")
 SHOW_AGENT = os.getenv("SHOW_AGENT", "0") == "1"   # демо: показывать субагента/маршрутизацию
+# Общий рубильник. По умолчанию ВЫКЛЮЧЕН - бот молчит во всех каналах (Telegram/IG/WA).
+# Чтобы включить бота - задать в окружении (Render) BOT_ENABLED=1 и передеплоить.
+BOT_ENABLED = os.getenv("BOT_ENABLED", "0") == "1"
 
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDS_FILE", "service_account.json")
@@ -414,6 +417,8 @@ async def classify(history, current):
 # ---------- Хэндлеры ----------
 @dp.message(CommandStart())
 async def on_start(message: Message):
+    if not BOT_ENABLED:
+        return
     sessions[message.chat.id] = {"history": [], "agent": None, "segment": None}
     followups.cancel(f"tg:{message.chat.id}")   # новый диалог - снять старые follow-up
     settings, _, _, _ = await get_content()
@@ -453,6 +458,8 @@ async def on_caltest(message: Message):
 
 @dp.message(F.text)
 async def on_text(message: Message):
+    if not BOT_ENABLED:
+        return
     chat_id = message.chat.id
     text_lower = message.text.strip().lower()
     # Стоп-слово от Натальи: если этот чат уже "заглушён" - бот молчит,

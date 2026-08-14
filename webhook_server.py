@@ -33,7 +33,7 @@ from fastapi import FastAPI, Request, Response
 from bot import (
     get_content, classify, build_prompt, detect_excursion_city, sanitize, claude, MODEL,
     AGENTS, LEAD_RE, BOOKING_RE, CLOSE_RE, muted_chats, WORDS,
-    USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp,
+    USE_WEB_SEARCH, WEB_SEARCH_TOOL, CALENDAR_TZ, bot, dp, BOT_ENABLED,
     save_lead, handle_booking,
 )
 from followups import followups   # <-- follow-up цепочка
@@ -222,6 +222,8 @@ async def incoming(request: Request):
 
 
 async def _handle_event(ev: dict, account_id: str = ""):
+    if not BOT_ENABLED:
+        return
     msg = ev.get("message") or {}
     if _already_seen(msg.get("mid")):
         logging.info("IG: дубликат сообщения %s, пропускаю", msg.get("mid"))
@@ -302,6 +304,8 @@ async def wa_incoming(request: Request):
 
 
 async def _handle_wa_message(m: dict, phone_number_id: str = ""):
+    if not BOT_ENABLED:
+        return
     if _already_seen(m.get("id")):
         logging.info("WA: дубликат сообщения %s, пропускаю", m.get("id"))
         return
