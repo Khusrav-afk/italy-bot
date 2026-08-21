@@ -34,7 +34,7 @@ SHOW_AGENT = os.getenv("SHOW_AGENT", "0") == "1"   # демо: показыва�
 # False - бот ВЫКЛЮЧЕН и молчит во всех каналах (Telegram / Instagram / WhatsApp).
 # Чтобы ВКЛЮЧИТЬ бота обратно: поменять на True, закоммитить и запушить в GitHub
 # (Render передеплоит сам, если включён Auto-Deploy; иначе - Manual Deploy).
-BOT_ENABLED = False
+BOT_ENABLED = True
 # =========================================================
 
 SHEET_ID = os.getenv("SHEET_ID")
