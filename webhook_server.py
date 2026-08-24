@@ -398,7 +398,8 @@ async def think(user_id: str, text: str, sessions: dict | None = None, channel: 
         reply = LEAD_RE.sub("", reply).strip()
     b = BOOKING_RE.search(reply)
     if b:
-        await handle_booking(b.group(1).strip())
+        book_source = f"{'Instagram' if channel == 'ig' else 'WhatsApp'}: {user_id}"
+        await handle_booking(b.group(1).strip(), source=book_source)
         reply = BOOKING_RE.sub("", reply).strip()
     if CLOSE_RE.search(reply):
         followups.cancel(f"{channel}:{user_id}")   # клиент явно попрощался - не напоминаем

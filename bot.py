@@ -521,7 +521,8 @@ async def on_text(message: Message):
         reply = LEAD_RE.sub("", reply).strip()
     book = BOOKING_RE.search(reply)
     if book:
-        await handle_booking(book.group(1).strip())
+        tg_source = f"Telegram: {message.from_user.full_name} (@{message.from_user.username or '-'})"
+        await handle_booking(book.group(1).strip(), source=tg_source)
         reply = BOOKING_RE.sub("", reply).strip()
     if CLOSE_RE.search(reply):
         followups.cancel(f"tg:{chat_id}")   # клиент явно попрощался - не беспокоим напоминаниями
@@ -585,7 +586,7 @@ def _append_lead_row(lead):
     ws.append_row([_safe(c) for c in row], value_input_option="USER_ENTERED")
 
 
-async def handle_booking(raw):
+async def handle_booking(raw, source=""):
     try:
         b = json.loads(raw)
     except json.JSONDecodeError:
@@ -594,11 +595,12 @@ async def handle_booking(raw):
         logging.info("Бронь, календарь выключен: %s", b)
         return
     try:
-        link = await asyncio.to_thread(_create_event, b)
+        link = await asyncio.to_thread(_create_event, b, source)
         if MANAGER_CHAT_ID:
             await bot.send_message(int(MANAGER_CHAT_ID),
                 f"БРОНЬ В КАЛЕНДАРЕ\n{b.get('title','Экскурсия')}\nКогда: {b.get('datetime','')}\n"
-                f"Имя: {b.get('name','')}\nКонтакт: {b.get('contact','')}\n{link}")
+                f"Имя: {b.get('name','')}\nКонтакт: {b.get('contact','')}\n"
+                f"Источник: {source or '-'}\n{link}")
     except Exception as e:
         logging.exception("calendar failed")
         if MANAGER_CHAT_ID:
@@ -623,7 +625,7 @@ def _parse_dt(s: str) -> datetime:
         raise
 
 
-def _create_event(b):
+def _create_event(b, source=""):
     from googleapiclient.discovery import build
     creds = _load_google_creds(["https://www.googleapis.com/auth/calendar"])
     svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
@@ -631,7 +633,8 @@ def _create_event(b):
     end = start + timedelta(minutes=int(b.get("duration_min") or 120))
     ev = {"summary": b.get("title") or "Экскурсия",
           "description": f"Имя: {b.get('name','')}\nКонтакт: {b.get('contact','')}\n"
-                         f"Человек: {b.get('people','')}\n{b.get('notes','')}",
+                         f"Человек: {b.get('people','')}\nОткуда клиент: {source or '-'}\n"
+                         f"{b.get('notes','')}",
           "start": {"dateTime": start.isoformat(), "timeZone": CALENDAR_TZ},
           "end": {"dateTime": end.isoformat(), "timeZone": CALENDAR_TZ}}
     return svc.events().insert(calendarId=CALENDAR_ID, body=ev).execute().get("htmlLink", "")
